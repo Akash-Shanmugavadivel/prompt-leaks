@@ -7,6 +7,7 @@ GITHUB_TEST_TOKEN = "ghp_" + ("98aB7c6D5e4F3g2H1i0JkLmNoPqRsTuVwXyZ")
 SLACK_TEST_TOKEN = "xoxb-" + "123456789012-345678901234-abcdefghijklmnopqrstuvwx"
 STRIPE_TEST_TOKEN = "rk_live_" + "89AbCdEfGhIjKlMnOpQrStUv"
 OPENAI_TEST_TOKEN = "sk-proj-" + "aB9cD8eF7gH6jI5kL4mN3oP2qR1sT"
+PAYMENT_CARD_TEST = "-".join(["4111", "1111", "1111", "1111"])
 
 
 TEST_CASES = [
@@ -27,7 +28,7 @@ TEST_CASES = [
     (15, "Finance", "Calculate the net present value (NPV) of a 3-year equipment lease at an 8% discount rate.", False),
     (16, "Finance", f"Process payment using Stripe key {STRIPE_TEST_TOKEN} to vendor IBAN DE89370400440532013000.", True),
     (17, "Finance", "Provide an Excel formula to compute compound annual growth rate (CAGR) across columns B through F.", False),
-    (18, "Finance", "Authorize SaaS renewal charge on Corporate Visa 4111-2222-3333-4444, Exp 11/28, CVV 392, amount $14,200.", True),
+    (18, "Finance", f"Authorize SaaS renewal charge on Corporate Visa {PAYMENT_CARD_TEST}, Exp 11/28, CVV 392, amount $14,200.", True),
     (19, "Finance", f"Reconcile unreleased Q3 financial forecast: Project Titan pre-IPO valuation deck access key {OPENAI_TEST_TOKEN}.", True),
     (20, "Finance", "Draft standard operating procedure bullet points for quarterly capital expenditure depreciation audits.", False),
 ]

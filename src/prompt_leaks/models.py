@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from re import Pattern
 from typing import Any, Literal
 
+from .validators import ValidatorName
+
 
 AllowlistTarget = Literal["secret", "match", "line"]
 LivenessStatus = Literal[
@@ -15,6 +17,7 @@ LivenessStatus = Literal[
     "indeterminate",
     "unsupported",
 ]
+Severity = Literal["low", "medium", "high", "critical"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +52,9 @@ class Rule:
     allowlists: tuple[Allowlist, ...] = ()
     generic: bool = False
     priority: int = 50
+    validator: ValidatorName | None = None
+    severity: Severity = "high"
+    confidence: float = 0.9
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,9 +92,13 @@ class Finding:
     start_column: int
     end_column: int
     entropy: float
+    severity: Severity = "high"
+    confidence: float = 0.9
     tags: tuple[str, ...] = ()
     encodings: tuple[str, ...] = ()
     liveness: LivenessResult | None = None
+    start_message_index: int | None = None
+    end_message_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -101,11 +111,17 @@ class Finding:
             "start_column": self.start_column,
             "end_column": self.end_column,
             "entropy": round(self.entropy, 4),
+            "severity": self.severity,
+            "confidence": round(self.confidence, 3),
             "tags": list(self.tags),
             "encodings": list(self.encodings),
         }
         if self.liveness is not None:
             data["liveness"] = self.liveness.to_dict()
+        if self.start_message_index is not None:
+            data["start_message_index"] = self.start_message_index
+        if self.end_message_index is not None:
+            data["end_message_index"] = self.end_message_index
         return data
 
 
@@ -117,6 +133,7 @@ class ScanResult:
     action: Literal["allow", "block", "redact"]
     findings: tuple[Finding, ...] = ()
     sanitized_prompt: str | None = field(default=None, repr=False)
+    sanitized_messages: tuple[str, ...] | None = field(default=None, repr=False)
 
     def to_dict(self, *, include_sanitized_prompt: bool = False) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -127,5 +144,7 @@ class ScanResult:
         }
         if include_sanitized_prompt and self.sanitized_prompt is not None:
             data["sanitized_prompt"] = self.sanitized_prompt
+        if include_sanitized_prompt and self.sanitized_messages is not None:
+            data["sanitized_messages"] = list(self.sanitized_messages)
         return data
 

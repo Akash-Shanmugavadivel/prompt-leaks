@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
-from typing import Literal, Protocol
+from bisect import bisect_right
+from typing import Literal, Protocol, Sequence
 
 from .decoder import DecodedView, decoded_views
 from .entropy import shannon_entropy
 from .keywords import KeywordIndex
 from .models import Allowlist, Finding, LivenessResult, Rule, ScanResult
+from .validators import validate_candidate
 
 
 class SecretVerifier(Protocol):
@@ -94,6 +96,72 @@ class PromptLeakDetector:
         )
         return self._build_result(prompt, candidates, findings, mode=mode)
 
+    def scan_messages(
+        self,
+        messages: Sequence[str],
+        *,
+        mode: Literal["block", "redact"] = "block",
+    ) -> ScanResult:
+        """Scan one conversation, including credentials split across messages."""
+        combined, starts, candidates = self._find_message_candidates(messages, mode=mode)
+        findings = tuple(
+            self._to_safe_finding(combined, item, message_starts=starts)
+            for item in candidates
+        )
+        return self._build_message_result(
+            tuple(messages), starts, candidates, findings, mode=mode
+        )
+
+    async def scan_messages_with_liveness(
+        self,
+        messages: Sequence[str],
+        verifier: SecretVerifier,
+        *,
+        mode: Literal["block", "redact"] = "block",
+    ) -> ScanResult:
+        """Scan a conversation and verify supported credentials."""
+        combined, starts, candidates = self._find_message_candidates(messages, mode=mode)
+        checks = await asyncio.gather(
+            *(
+                verifier.verify(rule_id=item.rule.rule_id, secret=item.secret)
+                for item in candidates
+            )
+        )
+        findings = tuple(
+            self._to_safe_finding(
+                combined,
+                item,
+                liveness=check,
+                message_starts=starts,
+            )
+            for item, check in zip(candidates, checks, strict=True)
+        )
+        return self._build_message_result(
+            tuple(messages), starts, candidates, findings, mode=mode
+        )
+
+    def _find_message_candidates(
+        self,
+        messages: Sequence[str],
+        *,
+        mode: Literal["block", "redact"],
+    ) -> tuple[str, tuple[int, ...], list[_Candidate]]:
+        if isinstance(messages, (str, bytes)) or not messages:
+            raise ValueError("messages must contain at least one prompt string")
+        if any(not isinstance(message, str) for message in messages):
+            raise TypeError("every message must be a string")
+        starts: list[int] = []
+        total = 0
+        for message in messages:
+            starts.append(total)
+            total += len(message)
+        if total > self._max_prompt_chars:
+            raise ValueError(
+                f"messages exceed max_prompt_chars={self._max_prompt_chars}"
+            )
+        combined = "".join(messages)
+        return combined, tuple(starts), self._find_candidates(combined, mode=mode)
+
     def _find_candidates(
         self,
         prompt: str,
@@ -144,6 +212,32 @@ class PromptLeakDetector:
 
         return ScanResult(detected=True, action="block", findings=findings)
 
+    @staticmethod
+    def _build_message_result(
+        messages: tuple[str, ...],
+        starts: tuple[int, ...],
+        candidates: list[_Candidate],
+        findings: tuple[Finding, ...],
+        *,
+        mode: Literal["block", "redact"],
+    ) -> ScanResult:
+        if not findings:
+            return ScanResult(
+                detected=False,
+                action="allow",
+                sanitized_messages=messages if mode == "redact" else None,
+            )
+        if mode == "redact":
+            return ScanResult(
+                detected=True,
+                action="redact",
+                findings=findings,
+                sanitized_messages=PromptLeakDetector._redact_messages(
+                    messages, starts, candidates
+                ),
+            )
+        return ScanResult(detected=True, action="block", findings=findings)
+
     def _scan_view(self, original_prompt: str, view: DecodedView) -> list[_Candidate]:
         selected = self._always_rules | self._keywords.matching_rules(view.text)
         candidates: list[_Candidate] = []
@@ -157,6 +251,8 @@ class PromptLeakDetector:
                 secret, local_start, local_end = group
                 entropy = shannon_entropy(secret)
                 if rule.min_entropy and entropy <= rule.min_entropy:
+                    continue
+                if not validate_candidate(rule.validator, secret):
                     continue
 
                 line = self._line_at(view.text, local_start)
@@ -269,11 +365,24 @@ class PromptLeakDetector:
         candidate: _Candidate,
         *,
         liveness: LivenessResult | None = None,
+        message_starts: tuple[int, ...] | None = None,
     ) -> Finding:
         start_line = prompt.count("\n", 0, candidate.source_start) + 1
         end_line = prompt.count("\n", 0, candidate.source_end) + 1
         line_start = prompt.rfind("\n", 0, candidate.source_start) + 1
         end_line_start = prompt.rfind("\n", 0, candidate.source_end) + 1
+        start_message_index = None
+        end_message_index = None
+        confidence = candidate.rule.confidence
+        if message_starts is not None:
+            start_message_index = max(
+                0, bisect_right(message_starts, candidate.source_start) - 1
+            )
+            end_probe = max(candidate.source_start, candidate.source_end - 1)
+            end_message_index = max(0, bisect_right(message_starts, end_probe) - 1)
+            if start_message_index != end_message_index:
+                confidence = max(0.0, confidence - 0.05)
+
         return Finding(
             rule_id=candidate.rule.rule_id,
             description=candidate.rule.description,
@@ -284,9 +393,13 @@ class PromptLeakDetector:
             start_column=candidate.source_start - line_start + 1,
             end_column=candidate.source_end - end_line_start + 1,
             entropy=candidate.entropy,
+            severity=candidate.rule.severity,
+            confidence=confidence,
             tags=candidate.rule.tags,
             encodings=candidate.encodings,
             liveness=liveness,
+            start_message_index=start_message_index,
+            end_message_index=end_message_index,
         )
 
     @staticmethod
@@ -310,4 +423,37 @@ class PromptLeakDetector:
             label = ",".join(sorted(rule_ids))
             output = output[:start] + f"[REDACTED:{label}]" + output[end:]
         return output
+
+    @staticmethod
+    def _redact_messages(
+        messages: tuple[str, ...],
+        starts: tuple[int, ...],
+        candidates: list[_Candidate],
+    ) -> tuple[str, ...]:
+        spans_by_message: list[list[tuple[int, int, str]]] = [
+            [] for _ in messages
+        ]
+        for item in candidates:
+            label = f"[REDACTED:{item.rule.rule_id}]"
+            for index, message in enumerate(messages):
+                message_start = starts[index]
+                message_end = message_start + len(message)
+                overlap_start = max(item.source_start, message_start)
+                overlap_end = min(item.source_end, message_end)
+                if overlap_start < overlap_end:
+                    spans_by_message[index].append(
+                        (
+                            overlap_start - message_start,
+                            overlap_end - message_start,
+                            label,
+                        )
+                    )
+
+        sanitized: list[str] = []
+        for message, spans in zip(messages, spans_by_message, strict=True):
+            output = message
+            for start, end, label in sorted(spans, reverse=True):
+                output = output[:start] + label + output[end:]
+            sanitized.append(output)
+        return tuple(sanitized)
 

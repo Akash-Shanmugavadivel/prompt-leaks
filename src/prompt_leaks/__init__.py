@@ -4,7 +4,12 @@ from .config import DetectorConfig, load_config, load_config_text
 from .defaults import default_config
 from .detector import PromptLeakDetector
 from .models import Finding, LivenessResult, ScanResult
-from .service import scan_prompt, scan_prompt_with_liveness
+from .service import (
+    scan_messages,
+    scan_messages_with_liveness,
+    scan_prompt,
+    scan_prompt_with_liveness,
+)
 
 
 def default_detector(
@@ -34,5 +39,7 @@ __all__ = [
     "load_config_text",
     "scan_prompt",
     "scan_prompt_with_liveness",
+    "scan_messages",
+    "scan_messages_with_liveness",
 ]
 

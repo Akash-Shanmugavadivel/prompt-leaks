@@ -7,6 +7,7 @@ the main detection ideas used by Gitleaks:
 - keyword prefiltering;
 - provider and context specific regular expressions;
 - secret capture groups and Shannon entropy checks;
+- Luhn and IBAN checksum validation;
 - rule and global allowlists;
 - bounded Base64, hexadecimal, and percent decoding;
 - deduplication between provider specific and generic findings.
@@ -59,7 +60,18 @@ for finding in result.findings:
         print(finding.rule_id, finding.liveness.status)
 ```
 
-The detector loads and compiles the packaged 229-rule catalog once per Python
+Conversation scanning detects credentials split at message boundaries:
+
+```python
+from prompt_leaks import scan_messages
+
+result = scan_messages(
+    ["Use token github_", "pat_REMAINDER_OF_TOKEN"],
+    mode="block",
+)
+```
+
+The detector loads and compiles the packaged 231-rule catalog once per Python
 process. Calls after the first reuse the same detector.
 
 ## Run the FastAPI service
@@ -128,6 +140,8 @@ Safe response:
       "start_column": 23,
       "end_column": 47,
       "entropy": 4.3349,
+      "severity": "critical",
+      "confidence": 0.9,
       "tags": ["prompt-extension", "authorization", "token"],
       "encodings": []
     }
@@ -139,6 +153,22 @@ Supported modes:
 
 - `block`: return findings and omit the original prompt from the response.
 - `redact`: return findings plus `sanitized_prompt` with secrets replaced.
+
+To scan a conversation, send `messages` instead of `prompt`:
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "Use token github_"},
+    {"role": "user", "content": "pat_REMAINDER_OF_TOKEN"}
+  ],
+  "mode": "redact",
+  "verify_liveness": false
+}
+```
+
+Cross-message findings include `start_message_index` and
+`end_message_index`. Redact mode returns `sanitized_messages`.
 
 ## Credential liveness
 
@@ -188,14 +218,29 @@ request-body capture in the API server, proxy, and error tracker.
 Safe audit records may contain a request ID, rule IDs, finding count, action,
 and timestamp. Do not record the prompt, regex match, secret, or line excerpt.
 
+## Organization rules and allowlists
+
+Place trusted organization rules and global allowlists in a separate TOML file,
+then set its path before starting the service:
+
+```powershell
+$env:PROMPT_LEAKS_ORG_CONFIG = "examples\organization-rules.toml"
+.\.venv\Scripts\prompt-leaks-api.exe
+```
+
+Organization rules with an existing ID replace the packaged rule. New IDs are
+added, and organization global allowlists are appended. Keep this file under
+administrator control; never accept rule or allowlist configuration from a
+prompt author. See `examples/organization-rules.toml` for the schema.
+
 ## Rule catalog
 
 The packaged catalog contains 221 content detection rules imported from the
-Gitleaks catalog plus eight prompt specific rules. These cover standalone
+Gitleaks catalog plus ten prompt specific rules. These cover standalone
 bearer headers, MongoDB URI passwords, private key blocks, SSNs, medical
-diagnosis codes, passport numbers, payment cards, and OpenAI project keys. The
-filename only `pkcs12-file` rule is omitted because prompt scanning has no file
-path.
+diagnosis codes, passport numbers, dates of birth, checksum-valid payment
+cards and IBANs, and OpenAI project keys. The filename only `pkcs12-file` rule
+is omitted because prompt scanning has no file path.
 
 Run the included credential, PII, and clean-prompt evaluation set with:
 
@@ -216,5 +261,5 @@ The same generated file must be copied to
 `src\prompt_leaks\catalog\gitleaks.toml` before building a release. Source
 attribution is in `THIRD_PARTY_NOTICES.md`.
 
-Deterministic rules cannot prove that a prompt is secret free. Unknown, split,
-newly issued, or deliberately obfuscated credential formats can evade them.
+Deterministic rules cannot prove that a prompt is secret free. Unknown, newly
+issued, or deliberately obfuscated credential formats can evade them.

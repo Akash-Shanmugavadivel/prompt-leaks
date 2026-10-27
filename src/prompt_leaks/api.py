@@ -8,15 +8,40 @@ from typing import Literal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
-from .service import MAX_PROMPT_CHARS, scan_prompt, scan_prompt_with_liveness
+from .service import (
+    MAX_PROMPT_CHARS,
+    scan_messages,
+    scan_messages_with_liveness,
+    scan_prompt,
+    scan_prompt_with_liveness,
+)
+
+
+class PromptMessage(BaseModel):
+    role: Literal["system", "developer", "user", "assistant", "tool"]
+    content: str = Field(max_length=MAX_PROMPT_CHARS)
 
 
 class ScanRequest(BaseModel):
-    prompt: str = Field(max_length=MAX_PROMPT_CHARS)
+    prompt: str | None = Field(default=None, max_length=MAX_PROMPT_CHARS)
+    messages: list[PromptMessage] | None = Field(
+        default=None, min_length=1, max_length=100
+    )
     mode: Literal["block", "redact"] = "block"
     verify_liveness: bool = False
+
+    @model_validator(mode="after")
+    def validate_input(self) -> ScanRequest:
+        if (self.prompt is None) == (self.messages is None):
+            raise ValueError("provide exactly one of prompt or messages")
+        if (
+            self.messages is not None
+            and sum(len(message.content) for message in self.messages) > MAX_PROMPT_CHARS
+        ):
+            raise ValueError(f"messages exceed {MAX_PROMPT_CHARS} total characters")
+        return self
 
 
 class LivenessResponse(BaseModel):
@@ -42,9 +67,13 @@ class FindingResponse(BaseModel):
     start_column: int
     end_column: int
     entropy: float
+    severity: Literal["low", "medium", "high", "critical"]
+    confidence: float
     tags: list[str]
     encodings: list[str]
     liveness: LivenessResponse | None = None
+    start_message_index: int | None = None
+    end_message_index: int | None = None
 
 
 class ScanResponse(BaseModel):
@@ -53,6 +82,7 @@ class ScanResponse(BaseModel):
     finding_count: int
     findings: list[FindingResponse]
     sanitized_prompt: str | None = None
+    sanitized_messages: list[str] | None = None
 
 
 app = FastAPI(
@@ -97,9 +127,23 @@ async def scan(request: ScanRequest) -> dict[str, object]:
                 status_code=403,
                 detail="Credential liveness verification is disabled by the server.",
             )
-        result = await scan_prompt_with_liveness(request.prompt, mode=request.mode)
+        if request.messages is not None:
+            result = await scan_messages_with_liveness(
+                [message.content for message in request.messages],
+                mode=request.mode,
+            )
+        else:
+            assert request.prompt is not None
+            result = await scan_prompt_with_liveness(request.prompt, mode=request.mode)
     else:
-        result = scan_prompt(request.prompt, mode=request.mode)
+        if request.messages is not None:
+            result = scan_messages(
+                [message.content for message in request.messages],
+                mode=request.mode,
+            )
+        else:
+            assert request.prompt is not None
+            result = scan_prompt(request.prompt, mode=request.mode)
     return result.to_dict(include_sanitized_prompt=request.mode == "redact")
 
 

@@ -1,0 +1,21 @@
+# Trusted server-side rules and allowlists for one organization.
+# Load with PROMPT_LEAKS_ORG_CONFIG; never accept this configuration from users.
+
+[[allowlists]]
+target = "secret"
+stop_words = ["EXAMPLE_ONLY", "YOUR_TOKEN_HERE"]
+
+[[rules]]
+id = "organization-internal-access-token"
+description = "Internal organization access token in prompt text."
+regex = "\\b(CORP_[A-Z0-9]{32})\\b"
+keywords = ["CORP_"]
+secret_group = 1
+entropy = 3
+severity = "critical"
+confidence = 0.98
+tags = ["organization", "internal-token"]
+
+[[rules.allowlists]]
+target = "line"
+regexes = ["(?i)documentation|example|placeholder"]

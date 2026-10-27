@@ -84,6 +84,8 @@ def _render_prompt_extensions() -> list[str]:
             "secretGroup": 1,
             "entropy": 3,
             "tags": ["prompt-extension", "authorization", "token"],
+            "severity": "critical",
+            "confidence": 0.9,
         },
         {
             "id": "prompt-mongodb-uri-password",
@@ -95,6 +97,8 @@ def _render_prompt_extensions() -> list[str]:
             "keywords": ["mongodb://", "mongodb+srv://"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "database", "password"],
+            "severity": "critical",
+            "confidence": 0.95,
         },
         {
             "id": "prompt-private-key-block",
@@ -106,36 +110,47 @@ def _render_prompt_extensions() -> list[str]:
             "keywords": ["private key", "-----begin"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "private-key"],
+            "severity": "critical",
+            "confidence": 0.99,
         },
         {
             "id": "prompt-us-ssn",
             "description": "Possible US Social Security number in prompt text.",
             "regex": (
                 r"(?i)\b(?:SSN|social\s+security(?:\s+number)?)\s*[:#=]?\s*"
-                r"(\d{3}[ -]\d{2}[ -]\d{4})\b"
+                r"(\d{3}(?:-|\s)\d{2}(?:-|\s)\d{4})\b"
             ),
             "keywords": ["ssn", "social security"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "pii", "ssn"],
+            "severity": "high",
+            "confidence": 0.92,
         },
         {
             "id": "prompt-medical-diagnosis-code",
             "description": "Possible medical diagnosis code in prompt text.",
             "regex": (
-                r"(?i)\b(?:diagnosis|medical|ICD(?:-?10)?)\s+(?:code\s*)?"
+                r"(?i)\b(?:diagnosis|medical|condition|ICD(?:-?10)?)\s+(?:code\s*)?"
                 r"[:#=]?\s*([A-TV-Z][0-9][0-9AB](?:\.[0-9A-Z]{1,4})?)\b"
             ),
-            "keywords": ["diagnosis", "medical", "icd"],
+            "keywords": ["diagnosis", "medical", "condition", "icd"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "pii", "health"],
+            "severity": "high",
+            "confidence": 0.9,
         },
         {
             "id": "prompt-passport-number",
             "description": "Possible passport number in prompt text.",
-            "regex": r"(?i)\bpassport(?:\s+(?:number|no\.?))?\s*[:#=]?\s*([A-Z0-9]{6,12})\b",
+            "regex": (
+                r"(?i)\bpassport(?:\s+(?:number|no\.?))?\s*[:#=]?\s*"
+                r"((?=[A-Z0-9]{6,12}\b)(?=[A-Z0-9]*[0-9])[A-Z0-9]{6,12})\b"
+            ),
             "keywords": ["passport"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "pii", "passport"],
+            "severity": "high",
+            "confidence": 0.9,
         },
         {
             "id": "prompt-payment-card",
@@ -148,6 +163,9 @@ def _render_prompt_extensions() -> list[str]:
             "keywords": ["visa", "mastercard", "amex", "credit card", "debit card", "corporate card"],
             "secretGroup": 1,
             "tags": ["prompt-extension", "financial", "payment-card"],
+            "validator": "luhn",
+            "severity": "critical",
+            "confidence": 0.98,
         },
         {
             "id": "prompt-openai-project-key",
@@ -157,6 +175,35 @@ def _render_prompt_extensions() -> list[str]:
             "secretGroup": 1,
             "entropy": 3,
             "tags": ["prompt-extension", "api", "openai"],
+            "severity": "critical",
+            "confidence": 0.98,
+        },
+        {
+            "id": "prompt-date-of-birth",
+            "description": "Possible date of birth in prompt text.",
+            "regex": (
+                r"(?i)\b(?:DOB|date\s+of\s+birth|birth\s+date|born)\s*[:#=]?\s*"
+                r"((?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])|"
+                r"(?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])[-/.](?:19|20)\d{2})\b"
+            ),
+            "keywords": ["dob", "date of birth", "birth date", "born"],
+            "secretGroup": 1,
+            "tags": ["prompt-extension", "pii", "date-of-birth"],
+            "severity": "high",
+            "confidence": 0.9,
+        },
+        {
+            "id": "prompt-iban",
+            "description": "Possible IBAN with a valid checksum in prompt text.",
+            "regex": (
+                r"\b([A-Z]{2}[0-9]{2}(?:[A-Z0-9]{11,30}|"
+                r"(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,3})?))\b"
+            ),
+            "secretGroup": 1,
+            "tags": ["prompt-extension", "financial", "iban"],
+            "validator": "iban",
+            "severity": "high",
+            "confidence": 0.99,
         },
     ]
 
@@ -189,6 +236,12 @@ def _render_rule(rule: dict[str, Any]) -> list[str]:
     is_generic = "generic" in rule_id.casefold()
     lines.append(f"generic = {'true' if is_generic else 'false'}")
     lines.append(f"priority = {40 if is_generic else 100}")
+    if rule.get("validator"):
+        lines.append(f"validator = {_string(rule['validator'])}")
+    if rule.get("severity"):
+        lines.append(f"severity = {_string(rule['severity'])}")
+    if "confidence" in rule:
+        lines.append(f"confidence = {float(rule['confidence']):g}")
     if rule.get("path"):
         lines.append(f"source_path_constraint = {_string(str(rule['path']))}")
     lines.append("")

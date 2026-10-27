@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Allowlist, Rule
+from .validators import SUPPORTED_VALIDATORS
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,25 +18,33 @@ class DetectorConfig:
     global_allowlists: tuple[Allowlist, ...] = ()
 
 
-def load_config(path: str | Path) -> DetectorConfig:
+def load_config(
+    path: str | Path,
+    *,
+    require_rules: bool = True,
+) -> DetectorConfig:
     """Load a complete detector configuration from TOML."""
     config_path = Path(path)
     with config_path.open("rb") as handle:
         data = tomllib.load(handle)
 
-    return _parse_config(data)
+    return _parse_config(data, require_rules=require_rules)
 
 
-def load_config_text(content: str) -> DetectorConfig:
+def load_config_text(content: str, *, require_rules: bool = True) -> DetectorConfig:
     """Load a complete detector configuration from a TOML string."""
-    return _parse_config(tomllib.loads(content))
+    return _parse_config(tomllib.loads(content), require_rules=require_rules)
 
 
-def _parse_config(data: dict[str, Any]) -> DetectorConfig:
+def _parse_config(
+    data: dict[str, Any],
+    *,
+    require_rules: bool,
+) -> DetectorConfig:
     """Translate parsed TOML into compiled rules."""
 
     rules = tuple(_parse_rule(item) for item in data.get("rules", []))
-    if not rules:
+    if require_rules and not rules:
         raise ValueError("configuration must contain at least one [[rules]] entry")
 
     allowlists = tuple(
@@ -52,6 +61,15 @@ def _parse_rule(data: dict[str, Any]) -> Rule:
     secret_group = data.get("secret_group")
     if secret_group is not None and not isinstance(secret_group, (int, str)):
         raise ValueError(f"rule {rule_id!r}: secret_group must be an integer or string")
+    validator = data.get("validator")
+    if validator is not None and validator not in SUPPORTED_VALIDATORS:
+        raise ValueError(f"rule {rule_id!r}: unsupported validator {validator!r}")
+    severity = str(data.get("severity", "medium" if data.get("generic") else "high"))
+    if severity not in {"low", "medium", "high", "critical"}:
+        raise ValueError(f"rule {rule_id!r}: invalid severity {severity!r}")
+    confidence = float(data.get("confidence", 0.7 if data.get("generic") else 0.9))
+    if not 0 <= confidence <= 1:
+        raise ValueError(f"rule {rule_id!r}: confidence must be between 0 and 1")
 
     return Rule(
         rule_id=rule_id,
@@ -66,6 +84,9 @@ def _parse_rule(data: dict[str, Any]) -> Rule:
         ),
         generic=bool(data.get("generic", False)),
         priority=int(data.get("priority", 50)),
+        validator=validator,  # type: ignore[arg-type]
+        severity=severity,  # type: ignore[arg-type]
+        confidence=confidence,
     )
 
 
