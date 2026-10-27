@@ -1,0 +1,313 @@
+"""Prompt secret detector."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import asyncio
+from typing import Literal, Protocol
+
+from .decoder import DecodedView, decoded_views
+from .entropy import shannon_entropy
+from .keywords import KeywordIndex
+from .models import Allowlist, Finding, LivenessResult, Rule, ScanResult
+
+
+class SecretVerifier(Protocol):
+    """Internal verifier interface. Implementations must never retain secrets."""
+
+    async def verify(self, *, rule_id: str, secret: str) -> LivenessResult: ...
+
+
+@dataclass(slots=True, repr=False)
+class _Candidate:
+    rule: Rule
+    secret: str
+    match: str
+    source_start: int
+    source_end: int
+    entropy: float
+    encodings: tuple[str, ...]
+
+
+class PromptLeakDetector:
+    """Detect secrets in a prompt without retaining raw findings."""
+
+    def __init__(
+        self,
+        rules: tuple[Rule, ...],
+        *,
+        global_allowlists: tuple[Allowlist, ...] = (),
+        max_decode_depth: int = 1,
+        max_prompt_chars: int = 100_000,
+    ) -> None:
+        if not rules:
+            raise ValueError("at least one rule is required")
+        if max_decode_depth < 0:
+            raise ValueError("max_decode_depth must be non-negative")
+        if max_prompt_chars <= 0:
+            raise ValueError("max_prompt_chars must be positive")
+
+        by_id = {rule.rule_id: rule for rule in rules}
+        if len(by_id) != len(rules):
+            raise ValueError("rule IDs must be unique")
+
+        self._rules = by_id
+        self._global_allowlists = global_allowlists
+        self._max_decode_depth = max_decode_depth
+        self._max_prompt_chars = max_prompt_chars
+        self._always_rules = {rule.rule_id for rule in rules if not rule.keywords}
+        self._keywords = KeywordIndex()
+        for rule in rules:
+            for keyword in rule.keywords:
+                self._keywords.add(keyword, rule.rule_id)
+        self._keywords.build()
+
+    def scan(
+        self,
+        prompt: str,
+        *,
+        mode: Literal["block", "redact"] = "block",
+    ) -> ScanResult:
+        """Scan one prompt and return only safe metadata and optional redacted text."""
+        candidates = self._find_candidates(prompt, mode=mode)
+        findings = tuple(self._to_safe_finding(prompt, item) for item in candidates)
+        return self._build_result(prompt, candidates, findings, mode=mode)
+
+    async def scan_with_liveness(
+        self,
+        prompt: str,
+        verifier: SecretVerifier,
+        *,
+        mode: Literal["block", "redact"] = "block",
+    ) -> ScanResult:
+        """Scan and verify supported credentials without exposing their values."""
+        candidates = self._find_candidates(prompt, mode=mode)
+        checks = await asyncio.gather(
+            *(
+                verifier.verify(rule_id=item.rule.rule_id, secret=item.secret)
+                for item in candidates
+            )
+        )
+        findings = tuple(
+            self._to_safe_finding(prompt, item, liveness=check)
+            for item, check in zip(candidates, checks, strict=True)
+        )
+        return self._build_result(prompt, candidates, findings, mode=mode)
+
+    def _find_candidates(
+        self,
+        prompt: str,
+        *,
+        mode: Literal["block", "redact"],
+    ) -> list[_Candidate]:
+        if not isinstance(prompt, str):
+            raise TypeError("prompt must be a string")
+        if len(prompt) > self._max_prompt_chars:
+            raise ValueError(
+                f"prompt exceeds max_prompt_chars={self._max_prompt_chars}"
+            )
+        if mode not in {"block", "redact"}:
+            raise ValueError("mode must be 'block' or 'redact'")
+
+        candidates = self._scan_view(
+            prompt,
+            DecodedView(prompt, 0, len(prompt), ()),
+        )
+        for view in decoded_views(prompt, self._max_decode_depth):
+            candidates.extend(self._scan_view(prompt, view))
+        return self._deduplicate(candidates)
+
+    @staticmethod
+    def _build_result(
+        prompt: str,
+        candidates: list[_Candidate],
+        findings: tuple[Finding, ...],
+        *,
+        mode: Literal["block", "redact"],
+    ) -> ScanResult:
+
+        if not findings:
+            return ScanResult(
+                detected=False,
+                action="allow",
+                sanitized_prompt=prompt if mode == "redact" else None,
+            )
+
+        if mode == "redact":
+            sanitized = PromptLeakDetector._redact(prompt, candidates)
+            return ScanResult(
+                detected=True,
+                action="redact",
+                findings=findings,
+                sanitized_prompt=sanitized,
+            )
+
+        return ScanResult(detected=True, action="block", findings=findings)
+
+    def _scan_view(self, original_prompt: str, view: DecodedView) -> list[_Candidate]:
+        selected = self._always_rules | self._keywords.matching_rules(view.text)
+        candidates: list[_Candidate] = []
+
+        for rule_id in selected:
+            rule = self._rules[rule_id]
+            for regex_match in rule.regex.finditer(view.text):
+                group = self._select_group(rule, regex_match)
+                if group is None:
+                    continue
+                secret, local_start, local_end = group
+                entropy = shannon_entropy(secret)
+                if rule.min_entropy and entropy <= rule.min_entropy:
+                    continue
+
+                line = self._line_at(view.text, local_start)
+                full_match = regex_match.group(0)
+                if self._is_allowed(
+                    secret=secret,
+                    match=full_match,
+                    line=line,
+                    allowlists=self._global_allowlists + rule.allowlists,
+                ):
+                    continue
+
+                if view.encodings:
+                    source_start, source_end = view.origin_start, view.origin_end
+                else:
+                    source_start, source_end = local_start, local_end
+
+                if source_start < 0 or source_end > len(original_prompt):
+                    continue
+
+                candidates.append(
+                    _Candidate(
+                        rule=rule,
+                        secret=secret,
+                        match=full_match,
+                        source_start=source_start,
+                        source_end=source_end,
+                        entropy=entropy,
+                        encodings=view.encodings,
+                    )
+                )
+
+        return candidates
+
+    @staticmethod
+    def _select_group(rule: Rule, regex_match) -> tuple[str, int, int] | None:
+        if rule.secret_group is not None:
+            try:
+                value = regex_match.group(rule.secret_group)
+                start, end = regex_match.span(rule.secret_group)
+            except (IndexError, KeyError):
+                return None
+            return (value, start, end) if value else None
+
+        for index, value in enumerate(regex_match.groups(), start=1):
+            if value:
+                start, end = regex_match.span(index)
+                return value, start, end
+
+        return regex_match.group(0), regex_match.start(), regex_match.end()
+
+    @staticmethod
+    def _is_allowed(
+        *,
+        secret: str,
+        match: str,
+        line: str,
+        allowlists: tuple[Allowlist, ...],
+    ) -> bool:
+        return any(
+            allowlist.matches(secret=secret, match=match, line=line)
+            for allowlist in allowlists
+        )
+
+    @staticmethod
+    def _line_at(text: str, offset: int) -> str:
+        start = text.rfind("\n", 0, offset) + 1
+        end = text.find("\n", offset)
+        if end < 0:
+            end = len(text)
+        return text[start:end]
+
+    @staticmethod
+    def _deduplicate(candidates: list[_Candidate]) -> list[_Candidate]:
+        ordered = sorted(
+            candidates,
+            key=lambda item: (
+                item.source_start,
+                item.source_end,
+                item.rule.generic,
+                -item.rule.priority,
+                item.rule.rule_id,
+            ),
+        )
+        exact: dict[tuple[int, int], _Candidate] = {}
+        for item in ordered:
+            key = (item.source_start, item.source_end)
+            current = exact.get(key)
+            if current is None or (
+                current.rule.generic and not item.rule.generic
+            ) or item.rule.priority > current.rule.priority:
+                exact[key] = item
+
+        values = sorted(exact.values(), key=lambda item: item.source_start)
+        output: list[_Candidate] = []
+        for item in values:
+            if item.rule.generic and any(
+                not other.rule.generic
+                and item.source_start < other.source_end
+                and other.source_start < item.source_end
+                for other in values
+            ):
+                continue
+            output.append(item)
+        return output
+
+    @staticmethod
+    def _to_safe_finding(
+        prompt: str,
+        candidate: _Candidate,
+        *,
+        liveness: LivenessResult | None = None,
+    ) -> Finding:
+        start_line = prompt.count("\n", 0, candidate.source_start) + 1
+        end_line = prompt.count("\n", 0, candidate.source_end) + 1
+        line_start = prompt.rfind("\n", 0, candidate.source_start) + 1
+        end_line_start = prompt.rfind("\n", 0, candidate.source_end) + 1
+        return Finding(
+            rule_id=candidate.rule.rule_id,
+            description=candidate.rule.description,
+            start_offset=candidate.source_start,
+            end_offset=candidate.source_end,
+            start_line=start_line,
+            end_line=end_line,
+            start_column=candidate.source_start - line_start + 1,
+            end_column=candidate.source_end - end_line_start + 1,
+            entropy=candidate.entropy,
+            tags=candidate.rule.tags,
+            encodings=candidate.encodings,
+            liveness=liveness,
+        )
+
+    @staticmethod
+    def _redact(prompt: str, candidates: list[_Candidate]) -> str:
+        spans: list[tuple[int, int, set[str]]] = []
+        for item in sorted(candidates, key=lambda value: (value.source_start, value.source_end)):
+            if spans and item.source_start <= spans[-1][1]:
+                start, end, rule_ids = spans[-1]
+                spans[-1] = (
+                    start,
+                    max(end, item.source_end),
+                    rule_ids | {item.rule.rule_id},
+                )
+            else:
+                spans.append(
+                    (item.source_start, item.source_end, {item.rule.rule_id})
+                )
+
+        output = prompt
+        for start, end, rule_ids in reversed(spans):
+            label = ",".join(sorted(rule_ids))
+            output = output[:start] + f"[REDACTED:{label}]" + output[end:]
+        return output
+

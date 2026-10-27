@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prompt-leaks"
+version = "0.1.0"
+description = "Detect and redact secrets in prompts before they are sent to an AI model."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "prompt-leaks contributors" }]
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.28,<1",
+  "uvicorn[standard]>=0.34,<1",
+]
+
+[project.scripts]
+prompt-leaks-api = "prompt_leaks.api:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prompt_leaks"]
+
