@@ -179,6 +179,34 @@ def _render_prompt_extensions() -> list[str]:
             "confidence": 0.98,
         },
         {
+            "id": "prompt-aws-secret-access-key",
+            "description": "Possible AWS secret access key in prompt text.",
+            "regex": (
+                r"(?i)\b(?:AWS[_ -]?)?SECRET[_ -]?ACCESS[_ -]?KEY\s*[:=]\s*"
+                r"([A-Za-z0-9/+=]{40})(?=$|[\s'\";,])"
+            ),
+            "keywords": ["secret_access_key", "secret access key", "aws_secret"],
+            "secretGroup": 1,
+            "entropy": 3,
+            "tags": ["prompt-extension", "aws", "secret-access-key"],
+            "severity": "critical",
+            "confidence": 0.97,
+        },
+        {
+            "id": "prompt-aws-session-token",
+            "description": "Possible AWS temporary credential session token in prompt text.",
+            "regex": (
+                r"(?i)\b(?:AWS[_ -]?)?SESSION[_ -]?TOKEN\s*[:=]\s*"
+                r"([A-Za-z0-9/+=]{80,2048})(?=$|[\s'\";,])"
+            ),
+            "keywords": ["session_token", "session token", "aws_session"],
+            "secretGroup": 1,
+            "entropy": 3,
+            "tags": ["prompt-extension", "aws", "session-token"],
+            "severity": "critical",
+            "confidence": 0.97,
+        },
+        {
             "id": "prompt-date-of-birth",
             "description": "Possible date of birth in prompt text.",
             "regex": (

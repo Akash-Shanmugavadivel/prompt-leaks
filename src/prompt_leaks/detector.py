@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import asyncio
 from bisect import bisect_right
 from typing import Literal, Protocol, Sequence
 
@@ -17,7 +16,12 @@ from .validators import validate_candidate
 class SecretVerifier(Protocol):
     """Internal verifier interface. Implementations must never retain secrets."""
 
-    async def verify(self, *, rule_id: str, secret: str) -> LivenessResult: ...
+    async def verify_many(
+        self,
+        targets: Sequence[tuple[str, str, int, int]],
+        *,
+        context: str,
+    ) -> tuple[LivenessResult, ...]: ...
 
 
 @dataclass(slots=True, repr=False)
@@ -84,11 +88,17 @@ class PromptLeakDetector:
     ) -> ScanResult:
         """Scan and verify supported credentials without exposing their values."""
         candidates = self._find_candidates(prompt, mode=mode)
-        checks = await asyncio.gather(
-            *(
-                verifier.verify(rule_id=item.rule.rule_id, secret=item.secret)
+        checks = await verifier.verify_many(
+            tuple(
+                (
+                    item.rule.rule_id,
+                    item.secret,
+                    item.source_start,
+                    item.source_end,
+                )
                 for item in candidates
-            )
+            ),
+            context=prompt,
         )
         findings = tuple(
             self._to_safe_finding(prompt, item, liveness=check)
@@ -121,11 +131,17 @@ class PromptLeakDetector:
     ) -> ScanResult:
         """Scan a conversation and verify supported credentials."""
         combined, starts, candidates = self._find_message_candidates(messages, mode=mode)
-        checks = await asyncio.gather(
-            *(
-                verifier.verify(rule_id=item.rule.rule_id, secret=item.secret)
+        checks = await verifier.verify_many(
+            tuple(
+                (
+                    item.rule.rule_id,
+                    item.secret,
+                    item.source_start,
+                    item.source_end,
+                )
                 for item in candidates
-            )
+            ),
+            context=combined,
         )
         findings = tuple(
             self._to_safe_finding(

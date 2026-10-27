@@ -2211,6 +2211,34 @@ severity = "critical"
 confidence = 0.98
 
 [[rules]]
+id = "prompt-aws-secret-access-key"
+description = "Possible AWS secret access key in prompt text."
+regex = "\\b(?:AWS[_ -]?)?SECRET[_ -]?ACCESS[_ -]?KEY\\s*[:=]\\s*([A-Za-z0-9/+=]{40})(?=$|[\\s'\\\";,])"
+flags = ["IGNORECASE"]
+keywords = ["secret_access_key", "secret access key", "aws_secret"]
+secret_group = 1
+entropy = 3
+tags = ["prompt-extension", "aws", "secret-access-key"]
+generic = false
+priority = 100
+severity = "critical"
+confidence = 0.97
+
+[[rules]]
+id = "prompt-aws-session-token"
+description = "Possible AWS temporary credential session token in prompt text."
+regex = "\\b(?:AWS[_ -]?)?SESSION[_ -]?TOKEN\\s*[:=]\\s*([A-Za-z0-9/+=]{80,2048})(?=$|[\\s'\\\";,])"
+flags = ["IGNORECASE"]
+keywords = ["session_token", "session token", "aws_session"]
+secret_group = 1
+entropy = 3
+tags = ["prompt-extension", "aws", "session-token"]
+generic = false
+priority = 100
+severity = "critical"
+confidence = 0.97
+
+[[rules]]
 id = "prompt-date-of-birth"
 description = "Possible date of birth in prompt text."
 regex = "\\b(?:DOB|date\\s+of\\s+birth|birth\\s+date|born)\\s*[:#=]?\\s*((?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])|(?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])[-/.](?:19|20)\\d{2})\\b"

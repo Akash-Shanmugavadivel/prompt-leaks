@@ -48,7 +48,7 @@ class LivenessResponse(BaseModel):
     status: Literal[
         "active",
         "invalid",
-        "restricted",
+        "valid_but_restricted",
         "indeterminate",
         "unsupported",
     ]

@@ -71,7 +71,7 @@ result = scan_messages(
 )
 ```
 
-The detector loads and compiles the packaged 231-rule catalog once per Python
+The detector loads and compiles the packaged 233-rule catalog once per Python
 process. Calls after the first reuse the same detector.
 
 ## Run the FastAPI service
@@ -182,10 +182,11 @@ Set `verify_liveness` to `true` to request active verification:
 }
 ```
 
-Supported providers are GitHub, OpenAI, GitLab.com, Slack, and Stripe. Each
-provider is contacted through a fixed HTTPS endpoint with a read only identity
-or account metadata request. Other secrets and PII receive `unsupported`
-without a network request.
+Supported providers are Anthropic, AWS, Azure, Google Cloud, GitHub, GitLab.com,
+Hugging Face, npm, OpenAI, Slack, and Stripe. Each provider is contacted through
+a fixed HTTPS endpoint with a read only identity, model-list, or account
+metadata request. Other secrets and PII receive `unsupported` without a network
+request.
 
 Each finding may include:
 
@@ -200,11 +201,42 @@ Each finding may include:
 }
 ```
 
-Statuses are `active`, `invalid`, `restricted`, `indeterminate`, and
-`unsupported`. Provider response bodies and matched credentials are never
-returned. Checks use a five second timeout, no redirects, no environment proxy,
-at most three concurrent connections, and at most five provider calls per
-prompt.
+Statuses are `active`, `invalid`, `valid_but_restricted`, `indeterminate`, and
+`unsupported`. `valid_but_restricted` means authentication was accepted but a
+scope, policy, quota, or rate limit blocked the read operation. Ambiguous and
+server-side failures return `indeterminate`. Provider response bodies and
+matched credentials are never returned.
+
+AWS verification requires an access key ID and secret access key in the same
+prompt. Temporary `ASIA` credentials also require a session token:
+
+```text
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_SESSION_TOKEN=...
+```
+
+AWS credentials are signed locally and checked with STS `GetCallerIdentity`.
+Azure client-secret verification requires contextual tenant and client IDs:
+
+```text
+AZURE_TENANT_ID=00000000-0000-4000-8000-000000000000
+AZURE_CLIENT_ID=00000000-0000-4000-8000-000000000000
+AZURE_CLIENT_SECRET=...
+```
+
+Configure active checks with trusted server environment variables:
+
+```powershell
+$env:PROMPT_LEAKS_LIVENESS_PROVIDERS = "github,aws,azure,anthropic,gcp,huggingface,npm"
+$env:PROMPT_LEAKS_LIVENESS_TIMEOUT_SECONDS = "5"
+$env:PROMPT_LEAKS_LIVENESS_MAX_CHECKS = "5"
+$env:PROMPT_LEAKS_LIVENESS_MAX_CONCURRENCY = "3"
+$env:PROMPT_LEAKS_ANTHROPIC_VERSION = "2023-06-01"
+```
+
+Provider URLs remain fixed in code to prevent prompt-controlled network
+destinations. Checks use no redirects or environment proxy.
 
 Prompts are limited to 100,000 characters. FastAPI returns HTTP `422` when
 the body is missing, malformed, too large, or contains an unsupported mode.
@@ -236,16 +268,23 @@ prompt author. See `examples/organization-rules.toml` for the schema.
 ## Rule catalog
 
 The packaged catalog contains 221 content detection rules imported from the
-Gitleaks catalog plus ten prompt specific rules. These cover standalone
+Gitleaks catalog plus twelve prompt specific rules. These cover standalone
 bearer headers, MongoDB URI passwords, private key blocks, SSNs, medical
 diagnosis codes, passport numbers, dates of birth, checksum-valid payment
-cards and IBANs, and OpenAI project keys. The filename only `pkcs12-file` rule
-is omitted because prompt scanning has no file path.
+cards and IBANs, AWS secret and session credentials, and OpenAI project keys.
+The filename only `pkcs12-file` rule is omitted because prompt scanning has no
+file path.
 
 Run the included credential, PII, and clean-prompt evaluation set with:
 
 ```powershell
 .\.venv\Scripts\python.exe examples\evaluate_prompts.py
+```
+
+Run provider verification tests with mocked HTTP transports:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 `examples/custom-rules.toml` is the readable catalog copy. To regenerate it

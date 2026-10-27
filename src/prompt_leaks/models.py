@@ -13,7 +13,7 @@ AllowlistTarget = Literal["secret", "match", "line"]
 LivenessStatus = Literal[
     "active",
     "invalid",
-    "restricted",
+    "valid_but_restricted",
     "indeterminate",
     "unsupported",
 ]
