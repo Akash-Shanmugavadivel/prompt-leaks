@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol, Sequence
+from typing import Any, Literal, Protocol, Sequence
 
 
 class PresidioUnavailableError(RuntimeError):
@@ -21,6 +21,10 @@ class PresidioScanConfig:
     language: str = "en"
     entities: tuple[str, ...] | None = None
     score_threshold: float = 0.5
+    operator: Literal["replace", "mask"] = "replace"
+    masking_char: str = "*"
+    chars_to_mask: int = 10
+    from_end: bool = False
 
     def __post_init__(self) -> None:
         if not self.language or len(self.language) > 16:
@@ -29,6 +33,12 @@ class PresidioScanConfig:
             raise ValueError("Presidio score_threshold must be between 0 and 1")
         if self.entities is not None and not self.entities:
             raise ValueError("Presidio entities must be omitted or contain values")
+        if self.operator not in {"replace", "mask"}:
+            raise ValueError("Presidio operator must be 'replace' or 'mask'")
+        if len(self.masking_char) != 1:
+            raise ValueError("Presidio masking_char must contain exactly one character")
+        if not 0 <= self.chars_to_mask <= 100_000:
+            raise ValueError("Presidio chars_to_mask must be between 0 and 100000")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,24 +61,38 @@ class PiiAnalyzer(Protocol):
         config: PresidioScanConfig,
     ) -> Sequence[PresidioEntity]: ...
 
+    def anonymize(
+        self,
+        value: str,
+        *,
+        entity_type: str,
+        replacement: str,
+        config: PresidioScanConfig,
+    ) -> str: ...
+
 
 class MicrosoftPresidioAnalyzer:
     """Lazy adapter around ``presidio_analyzer.AnalyzerEngine``."""
 
-    def __init__(self, analyzer: Any | None = None) -> None:
-        if analyzer is not None:
-            self._analyzer = analyzer
-            return
-
+    def __init__(
+        self,
+        analyzer: Any | None = None,
+        anonymizer: Any | None = None,
+    ) -> None:
         try:
             from presidio_analyzer import AnalyzerEngine
+            from presidio_anonymizer import AnonymizerEngine
+            from presidio_anonymizer.entities import OperatorConfig, RecognizerResult
         except ImportError as error:
             raise PresidioUnavailableError(
                 "Install prompt-leaks with the 'presidio' extra."
             ) from error
 
         try:
-            self._analyzer = AnalyzerEngine()
+            self._analyzer = analyzer or AnalyzerEngine()
+            self._anonymizer = anonymizer or AnonymizerEngine()
+            self._operator_config = OperatorConfig
+            self._recognizer_result = RecognizerResult
         except Exception as error:
             raise PresidioUnavailableError(
                 "Presidio could not initialize its configured NLP model."
@@ -110,3 +134,44 @@ class MicrosoftPresidioAnalyzer:
                     )
                 )
         return tuple(sorted(entities, key=lambda item: (item.start, item.end)))
+
+    def anonymize(
+        self,
+        value: str,
+        *,
+        entity_type: str,
+        replacement: str,
+        config: PresidioScanConfig,
+    ) -> str:
+        if config.operator == "mask":
+            operator = self._operator_config(
+                "mask",
+                {
+                    "masking_char": config.masking_char,
+                    "chars_to_mask": min(config.chars_to_mask, len(value)),
+                    "from_end": config.from_end,
+                },
+            )
+        else:
+            operator = self._operator_config(
+                "replace",
+                {"new_value": replacement},
+            )
+        try:
+            result = self._anonymizer.anonymize(
+                text=value,
+                analyzer_results=[
+                    self._recognizer_result(
+                        entity_type=entity_type,
+                        start=0,
+                        end=len(value),
+                        score=1.0,
+                    )
+                ],
+                operators={"DEFAULT": operator},
+            )
+        except (KeyError, ValueError) as error:
+            raise PresidioAnalysisError(
+                "Presidio could not apply the requested anonymization operator."
+            ) from error
+        return str(result.text)

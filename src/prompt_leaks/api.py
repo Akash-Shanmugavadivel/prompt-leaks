@@ -34,12 +34,20 @@ class PresidioOptions(BaseModel):
     language: str = Field(default="en", min_length=1, max_length=16)
     entities: list[str] | None = Field(default=None, min_length=1, max_length=100)
     score_threshold: float = Field(default=0.5, ge=0, le=1)
+    operator: Literal["replace", "mask"] = "replace"
+    masking_char: str = Field(default="*", min_length=1, max_length=1)
+    chars_to_mask: int = Field(default=10, ge=0, le=100_000)
+    from_end: bool = False
 
     def to_config(self) -> PresidioScanConfig:
         return PresidioScanConfig(
             language=self.language,
             entities=tuple(self.entities) if self.entities is not None else None,
             score_threshold=self.score_threshold,
+            operator=self.operator,
+            masking_char=self.masking_char,
+            chars_to_mask=self.chars_to_mask,
+            from_end=self.from_end,
         )
 
 

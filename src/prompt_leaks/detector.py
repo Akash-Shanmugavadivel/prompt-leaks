@@ -36,6 +36,7 @@ class _Candidate:
     entropy: float
     encodings: tuple[str, ...]
     confidence: float | None = None
+    replacement: str | None = None
 
 
 class PromptLeakDetector:
@@ -245,6 +246,7 @@ class PromptLeakDetector:
                     prompt,
                     pii_analyzer,
                     pii_config or PresidioScanConfig(),
+                    mode=mode,
                 )
             )
         return self._deduplicate(candidates)
@@ -254,6 +256,8 @@ class PromptLeakDetector:
         prompt: str,
         analyzer: PiiAnalyzer,
         config: PresidioScanConfig,
+        *,
+        mode: Literal["block", "redact"],
     ) -> list[_Candidate]:
         candidates: list[_Candidate] = []
         for entity in analyzer.analyze(prompt, config=config):
@@ -273,10 +277,19 @@ class PromptLeakDetector:
             ).strip("-")
             if not normalized_type:
                 continue
+            rule_id = f"presidio-{normalized_type}"
+            replacement = None
+            if mode == "redact":
+                replacement = analyzer.anonymize(
+                    secret,
+                    entity_type=entity.entity_type,
+                    replacement=f"[REDACTED:{rule_id}]",
+                    config=config,
+                )
             candidates.append(
                 _Candidate(
                     rule=Rule(
-                        rule_id=f"presidio-{normalized_type}",
+                        rule_id=rule_id,
                         description=(
                             f"Microsoft Presidio detected {entity.entity_type} PII."
                         ),
@@ -294,6 +307,7 @@ class PromptLeakDetector:
                     entropy=shannon_entropy(secret),
                     encodings=(),
                     confidence=entity.score,
+                    replacement=replacement,
                 )
             )
         return candidates
@@ -545,24 +559,31 @@ class PromptLeakDetector:
 
     @staticmethod
     def _redact(prompt: str, candidates: list[_Candidate]) -> str:
-        spans: list[tuple[int, int, set[str]]] = []
+        spans: list[tuple[int, int, set[str], str | None]] = []
         for item in sorted(candidates, key=lambda value: (value.source_start, value.source_end)):
             if spans and item.source_start <= spans[-1][1]:
-                start, end, rule_ids = spans[-1]
+                start, end, rule_ids, _replacement = spans[-1]
                 spans[-1] = (
                     start,
                     max(end, item.source_end),
                     rule_ids | {item.rule.rule_id},
+                    None,
                 )
             else:
                 spans.append(
-                    (item.source_start, item.source_end, {item.rule.rule_id})
+                    (
+                        item.source_start,
+                        item.source_end,
+                        {item.rule.rule_id},
+                        item.replacement,
+                    )
                 )
 
         output = prompt
-        for start, end, rule_ids in reversed(spans):
+        for start, end, rule_ids, replacement in reversed(spans):
             label = ",".join(sorted(rule_ids))
-            output = output[:start] + f"[REDACTED:{label}]" + output[end:]
+            redacted = replacement or f"[REDACTED:{label}]"
+            output = output[:start] + redacted + output[end:]
         return output
 
     @staticmethod
@@ -575,13 +596,23 @@ class PromptLeakDetector:
             [] for _ in messages
         ]
         for item in candidates:
-            label = f"[REDACTED:{item.rule.rule_id}]"
+            replacement = item.replacement or f"[REDACTED:{item.rule.rule_id}]"
+            start_message_index = max(
+                0, bisect_right(starts, item.source_start) - 1
+            )
+            end_probe = max(item.source_start, item.source_end - 1)
+            end_message_index = max(0, bisect_right(starts, end_probe) - 1)
             for index, message in enumerate(messages):
                 message_start = starts[index]
                 message_end = message_start + len(message)
                 overlap_start = max(item.source_start, message_start)
                 overlap_end = min(item.source_end, message_end)
                 if overlap_start < overlap_end:
+                    label = (
+                        replacement
+                        if start_message_index == end_message_index == index
+                        else f"[REDACTED:{item.rule.rule_id}]"
+                    )
                     spans_by_message[index].append(
                         (
                             overlap_start - message_start,

@@ -209,7 +209,8 @@ object to enable it for a request:
   "presidio": {
     "language": "en",
     "entities": ["PERSON", "EMAIL_ADDRESS"],
-    "score_threshold": 0.6
+    "score_threshold": 0.6,
+    "operator": "replace"
   }
 }
 ```
@@ -244,6 +245,29 @@ those spans into its existing findings, overlap deduplication, multi-message,
 allowlist, block, and redaction pipeline. Raw PII is not returned in findings.
 If a deterministic rule and Presidio identify the same span, the deterministic
 rule wins.
+
+Use Presidio's mask operator when part of each detected value should remain
+visible:
+
+```json
+{
+  "prompt": "My name is Sanjay Kumar and my email is sanjay@example.com",
+  "mode": "redact",
+  "presidio": {
+    "language": "en",
+    "entities": ["PERSON", "EMAIL_ADDRESS"],
+    "operator": "mask",
+    "masking_char": "*",
+    "chars_to_mask": 10,
+    "from_end": false
+  }
+}
+```
+
+This produces values similar to `**********ar` and `**********mple.com`.
+`from_end: false` masks from the beginning; `true` masks from the end. Full
+`replace` remains the default because partial masks intentionally retain part
+of the original PII.
 
 Omit `entities` to use all entities supported by the installed Presidio
 recognizers. Disable this feature server-wide with:
