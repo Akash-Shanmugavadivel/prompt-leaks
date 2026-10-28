@@ -4,6 +4,11 @@ from .config import DetectorConfig, load_config, load_config_text
 from .defaults import default_config
 from .detector import PromptLeakDetector
 from .models import Finding, LivenessResult, ScanResult
+from .presidio import (
+    PresidioAnalysisError,
+    PresidioScanConfig,
+    PresidioUnavailableError,
+)
 from .service import (
     scan_messages,
     scan_messages_with_liveness,
@@ -32,6 +37,9 @@ __all__ = [
     "Finding",
     "LivenessResult",
     "PromptLeakDetector",
+    "PresidioAnalysisError",
+    "PresidioScanConfig",
+    "PresidioUnavailableError",
     "ScanResult",
     "default_config",
     "default_detector",

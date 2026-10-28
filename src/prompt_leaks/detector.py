@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from bisect import bisect_right
+import re
 from typing import Literal, Protocol, Sequence
 
 from .decoder import DecodedView, decoded_views
 from .entropy import shannon_entropy
 from .keywords import KeywordIndex
 from .models import Allowlist, Finding, LivenessResult, Rule, ScanResult
+from .presidio import PiiAnalyzer, PresidioScanConfig
 from .validators import validate_candidate
 
 
@@ -33,6 +35,7 @@ class _Candidate:
     source_end: int
     entropy: float
     encodings: tuple[str, ...]
+    confidence: float | None = None
 
 
 class PromptLeakDetector:
@@ -73,9 +76,16 @@ class PromptLeakDetector:
         prompt: str,
         *,
         mode: Literal["block", "redact"] = "block",
+        pii_analyzer: PiiAnalyzer | None = None,
+        pii_config: PresidioScanConfig | None = None,
     ) -> ScanResult:
         """Scan one prompt and return only safe metadata and optional redacted text."""
-        candidates = self._find_candidates(prompt, mode=mode)
+        candidates = self._find_candidates(
+            prompt,
+            mode=mode,
+            pii_analyzer=pii_analyzer,
+            pii_config=pii_config,
+        )
         findings = tuple(self._to_safe_finding(prompt, item) for item in candidates)
         return self._build_result(prompt, candidates, findings, mode=mode)
 
@@ -85,9 +95,16 @@ class PromptLeakDetector:
         verifier: SecretVerifier,
         *,
         mode: Literal["block", "redact"] = "block",
+        pii_analyzer: PiiAnalyzer | None = None,
+        pii_config: PresidioScanConfig | None = None,
     ) -> ScanResult:
         """Scan and verify supported credentials without exposing their values."""
-        candidates = self._find_candidates(prompt, mode=mode)
+        candidates = self._find_candidates(
+            prompt,
+            mode=mode,
+            pii_analyzer=pii_analyzer,
+            pii_config=pii_config,
+        )
         checks = await verifier.verify_many(
             tuple(
                 (
@@ -111,9 +128,16 @@ class PromptLeakDetector:
         messages: Sequence[str],
         *,
         mode: Literal["block", "redact"] = "block",
+        pii_analyzer: PiiAnalyzer | None = None,
+        pii_config: PresidioScanConfig | None = None,
     ) -> ScanResult:
         """Scan one conversation, including credentials split across messages."""
-        combined, starts, candidates = self._find_message_candidates(messages, mode=mode)
+        combined, starts, candidates = self._find_message_candidates(
+            messages,
+            mode=mode,
+            pii_analyzer=pii_analyzer,
+            pii_config=pii_config,
+        )
         findings = tuple(
             self._to_safe_finding(combined, item, message_starts=starts)
             for item in candidates
@@ -128,9 +152,16 @@ class PromptLeakDetector:
         verifier: SecretVerifier,
         *,
         mode: Literal["block", "redact"] = "block",
+        pii_analyzer: PiiAnalyzer | None = None,
+        pii_config: PresidioScanConfig | None = None,
     ) -> ScanResult:
         """Scan a conversation and verify supported credentials."""
-        combined, starts, candidates = self._find_message_candidates(messages, mode=mode)
+        combined, starts, candidates = self._find_message_candidates(
+            messages,
+            mode=mode,
+            pii_analyzer=pii_analyzer,
+            pii_config=pii_config,
+        )
         checks = await verifier.verify_many(
             tuple(
                 (
@@ -161,6 +192,8 @@ class PromptLeakDetector:
         messages: Sequence[str],
         *,
         mode: Literal["block", "redact"],
+        pii_analyzer: PiiAnalyzer | None,
+        pii_config: PresidioScanConfig | None,
     ) -> tuple[str, tuple[int, ...], list[_Candidate]]:
         if isinstance(messages, (str, bytes)) or not messages:
             raise ValueError("messages must contain at least one prompt string")
@@ -176,13 +209,20 @@ class PromptLeakDetector:
                 f"messages exceed max_prompt_chars={self._max_prompt_chars}"
             )
         combined = "".join(messages)
-        return combined, tuple(starts), self._find_candidates(combined, mode=mode)
+        return combined, tuple(starts), self._find_candidates(
+            combined,
+            mode=mode,
+            pii_analyzer=pii_analyzer,
+            pii_config=pii_config,
+        )
 
     def _find_candidates(
         self,
         prompt: str,
         *,
         mode: Literal["block", "redact"],
+        pii_analyzer: PiiAnalyzer | None = None,
+        pii_config: PresidioScanConfig | None = None,
     ) -> list[_Candidate]:
         if not isinstance(prompt, str):
             raise TypeError("prompt must be a string")
@@ -199,7 +239,88 @@ class PromptLeakDetector:
         )
         for view in decoded_views(prompt, self._max_decode_depth):
             candidates.extend(self._scan_view(prompt, view))
+        if pii_analyzer is not None:
+            candidates.extend(
+                self._scan_pii(
+                    prompt,
+                    pii_analyzer,
+                    pii_config or PresidioScanConfig(),
+                )
+            )
         return self._deduplicate(candidates)
+
+    def _scan_pii(
+        self,
+        prompt: str,
+        analyzer: PiiAnalyzer,
+        config: PresidioScanConfig,
+    ) -> list[_Candidate]:
+        candidates: list[_Candidate] = []
+        for entity in analyzer.analyze(prompt, config=config):
+            if not 0 <= entity.start < entity.end <= len(prompt):
+                continue
+            secret = prompt[entity.start : entity.end]
+            line = self._line_at(prompt, entity.start)
+            if self._is_allowed(
+                secret=secret,
+                match=secret,
+                line=line,
+                allowlists=self._global_allowlists,
+            ):
+                continue
+            normalized_type = re.sub(
+                r"[^a-z0-9]+", "-", entity.entity_type.casefold()
+            ).strip("-")
+            if not normalized_type:
+                continue
+            candidates.append(
+                _Candidate(
+                    rule=Rule(
+                        rule_id=f"presidio-{normalized_type}",
+                        description=(
+                            f"Microsoft Presidio detected {entity.entity_type} PII."
+                        ),
+                        regex=re.compile(r"(?!)"),
+                        tags=("pii", "presidio", entity.entity_type.casefold()),
+                        generic=True,
+                        priority=30,
+                        severity=self._presidio_severity(entity.entity_type),
+                        confidence=entity.score,
+                    ),
+                    secret=secret,
+                    match=secret,
+                    source_start=entity.start,
+                    source_end=entity.end,
+                    entropy=shannon_entropy(secret),
+                    encodings=(),
+                    confidence=entity.score,
+                )
+            )
+        return candidates
+
+    @staticmethod
+    def _presidio_severity(entity_type: str) -> Literal[
+        "low", "medium", "high", "critical"
+    ]:
+        high_risk_markers = (
+            "BANK",
+            "CREDIT_CARD",
+            "CRYPTO",
+            "DRIVER_LICENSE",
+            "HEALTH",
+            "IBAN",
+            "IDENTITY",
+            "ITIN",
+            "LICENSE",
+            "MEDICAL",
+            "NATIONAL_ID",
+            "PASSPORT",
+            "SSN",
+            "TAX",
+        )
+        if any(marker in entity_type for marker in high_risk_markers):
+            return "high"
+        return "medium"
 
     @staticmethod
     def _build_result(
@@ -389,7 +510,11 @@ class PromptLeakDetector:
         end_line_start = prompt.rfind("\n", 0, candidate.source_end) + 1
         start_message_index = None
         end_message_index = None
-        confidence = candidate.rule.confidence
+        confidence = (
+            candidate.confidence
+            if candidate.confidence is not None
+            else candidate.rule.confidence
+        )
         if message_starts is not None:
             start_message_index = max(
                 0, bisect_right(message_starts, candidate.source_start) - 1

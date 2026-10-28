@@ -16,6 +16,11 @@ dependencies = [
   "uvicorn[standard]>=0.34,<1",
 ]
 
+[project.optional-dependencies]
+presidio = [
+  "presidio-analyzer>=2.2.360,<3",
+]
+
 [project.scripts]
 prompt-leaks-api = "prompt_leaks.api:run"
 

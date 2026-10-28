@@ -25,6 +25,14 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
+To enable Microsoft Presidio PII analysis, install the optional dependency and
+an English spaCy model:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[presidio]"
+.\.venv\Scripts\python.exe -m spacy download en_core_web_lg
+```
+
 ## Use as a Python function
 
 ```python
@@ -46,6 +54,24 @@ To replace detected values and continue with a sanitized prompt:
 
 ```python
 result = scan_prompt(user_prompt, mode="redact")
+prompt_for_model = result.sanitized_prompt
+```
+
+Enable Presidio when names, email addresses, phone numbers, locations, national
+identifiers, and other contextual PII should also be detected:
+
+```python
+from prompt_leaks import PresidioScanConfig, scan_prompt
+
+result = scan_prompt(
+    user_prompt,
+    mode="redact",
+    presidio=PresidioScanConfig(
+        language="en",
+        entities=("PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD"),
+        score_threshold=0.6,
+    ),
+)
 prompt_for_model = result.sanitized_prompt
 ```
 
@@ -169,6 +195,66 @@ To scan a conversation, send `messages` instead of `prompt`:
 
 Cross-message findings include `start_message_index` and
 `end_message_index`. Redact mode returns `sanitized_messages`.
+
+## Microsoft Presidio PII analysis
+
+Presidio is optional and runs locally in the API process. Add a `presidio`
+object to enable it for a request:
+
+```json
+{
+  "prompt": "My name is Sanjay Kumar and my email is sanjay@example.com",
+  "mode": "redact",
+  "verify_liveness": false,
+  "presidio": {
+    "language": "en",
+    "entities": ["PERSON", "EMAIL_ADDRESS"],
+    "score_threshold": 0.6
+  }
+}
+```
+
+Abridged example output:
+
+```json
+{
+  "detected": true,
+  "action": "redact",
+  "finding_count": 2,
+  "findings": [
+    {
+      "rule_id": "presidio-person",
+      "severity": "medium",
+      "confidence": 0.85,
+      "tags": ["pii", "presidio", "person"]
+    },
+    {
+      "rule_id": "presidio-email-address",
+      "severity": "medium",
+      "confidence": 1.0,
+      "tags": ["pii", "presidio", "email_address"]
+    }
+  ],
+  "sanitized_prompt": "My name is [REDACTED:presidio-person] and my email is [REDACTED:presidio-email-address]"
+}
+```
+
+Presidio supplies entity type, location, and confidence. `prompt-leaks` maps
+those spans into its existing findings, overlap deduplication, multi-message,
+allowlist, block, and redaction pipeline. Raw PII is not returned in findings.
+If a deterministic rule and Presidio identify the same span, the deterministic
+rule wins.
+
+Omit `entities` to use all entities supported by the installed Presidio
+recognizers. Disable this feature server-wide with:
+
+```powershell
+$env:PROMPT_LEAKS_ENABLE_PRESIDIO = "false"
+```
+
+Presidio requires an NLP model and adds more CPU, memory, and startup time than
+the deterministic secret rules. The analyzer is created lazily on the first
+Presidio request and then reused.
 
 ## Credential liveness
 

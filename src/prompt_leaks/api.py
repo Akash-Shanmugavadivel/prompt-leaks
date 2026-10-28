@@ -10,6 +10,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
+from .presidio import (
+    PresidioAnalysisError,
+    PresidioScanConfig,
+    PresidioUnavailableError,
+)
+
 from .service import (
     MAX_PROMPT_CHARS,
     scan_messages,
@@ -24,6 +30,19 @@ class PromptMessage(BaseModel):
     content: str = Field(max_length=MAX_PROMPT_CHARS)
 
 
+class PresidioOptions(BaseModel):
+    language: str = Field(default="en", min_length=1, max_length=16)
+    entities: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    score_threshold: float = Field(default=0.5, ge=0, le=1)
+
+    def to_config(self) -> PresidioScanConfig:
+        return PresidioScanConfig(
+            language=self.language,
+            entities=tuple(self.entities) if self.entities is not None else None,
+            score_threshold=self.score_threshold,
+        )
+
+
 class ScanRequest(BaseModel):
     prompt: str | None = Field(default=None, max_length=MAX_PROMPT_CHARS)
     messages: list[PromptMessage] | None = Field(
@@ -31,6 +50,7 @@ class ScanRequest(BaseModel):
     )
     mode: Literal["block", "redact"] = "block"
     verify_liveness: bool = False
+    presidio: PresidioOptions | None = None
 
     @model_validator(mode="after")
     def validate_input(self) -> ScanRequest:
@@ -120,30 +140,62 @@ def health() -> dict[str, str]:
     response_model_exclude_none=True,
 )
 async def scan(request: ScanRequest) -> dict[str, object]:
-    if request.verify_liveness:
-        enabled = os.getenv("PROMPT_LEAKS_ENABLE_LIVENESS", "true").casefold()
+    presidio_config = request.presidio.to_config() if request.presidio else None
+    if presidio_config is not None:
+        enabled = os.getenv("PROMPT_LEAKS_ENABLE_PRESIDIO", "true").casefold()
         if enabled in {"0", "false", "no", "off"}:
             raise HTTPException(
                 status_code=403,
-                detail="Credential liveness verification is disabled by the server.",
+                detail="Presidio PII analysis is disabled by the server.",
             )
-        if request.messages is not None:
-            result = await scan_messages_with_liveness(
-                [message.content for message in request.messages],
-                mode=request.mode,
-            )
+    try:
+        if request.verify_liveness:
+            enabled = os.getenv("PROMPT_LEAKS_ENABLE_LIVENESS", "true").casefold()
+            if enabled in {"0", "false", "no", "off"}:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Credential liveness verification is disabled by the server.",
+                )
+            if request.messages is not None:
+                result = await scan_messages_with_liveness(
+                    [message.content for message in request.messages],
+                    mode=request.mode,
+                    presidio=presidio_config,
+                )
+            else:
+                assert request.prompt is not None
+                result = await scan_prompt_with_liveness(
+                    request.prompt,
+                    mode=request.mode,
+                    presidio=presidio_config,
+                )
         else:
-            assert request.prompt is not None
-            result = await scan_prompt_with_liveness(request.prompt, mode=request.mode)
-    else:
-        if request.messages is not None:
-            result = scan_messages(
-                [message.content for message in request.messages],
-                mode=request.mode,
-            )
-        else:
-            assert request.prompt is not None
-            result = scan_prompt(request.prompt, mode=request.mode)
+            if request.messages is not None:
+                result = scan_messages(
+                    [message.content for message in request.messages],
+                    mode=request.mode,
+                    presidio=presidio_config,
+                )
+            else:
+                assert request.prompt is not None
+                result = scan_prompt(
+                    request.prompt,
+                    mode=request.mode,
+                    presidio=presidio_config,
+                )
+    except PresidioUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Presidio is unavailable. Install the optional dependency and "
+                "configured NLP model."
+            ),
+        ) from error
+    except PresidioAnalysisError as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Presidio could not analyze the requested language or entities.",
+        ) from error
     return result.to_dict(include_sanitized_prompt=request.mode == "redact")
 
 
