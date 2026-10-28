@@ -19,6 +19,11 @@ flags = ["IGNORECASE"]
 regexes = ["^true|false|null$", "^(?i:a+|b+|c+|d+|e+|f+|g+|h+|i+|j+|k+|l+|m+|n+|o+|p+|q+|r+|s+|t+|u+|v+|w+|x+|y+|z+|\\*+|\\.+)$", "^\\$(?:\\d+|{\\d+})$", "^\\$(?:[A-Z_]+|[a-z_]+)$", "^\\${(?:[A-Z_]+|[a-z_]+)}$", "^\\{\\{[ \\t]*[\\w ().|]+[ \\t]*}}$", "^\\$\\{\\{[ \\t]*(?:(?:env|github|secrets|vars)(?:\\.[A-Za-z]\\w+)+[\\w \"'&./=|]*)[ \\t]*}}$", "^%(?:[A-Z_]+|[a-z_]+)%$", "^%[+\\-# 0]?[bcdeEfFgGoOpqstTUvxX]$", "^\\{\\d{0,2}}$", "^@(?:[A-Z_]+|[a-z_]+)@$", "^/Users/[a-z0-9]+/[\\w .-/]+$", "^/(?:bin|etc|home|opt|tmp|usr|var)/[\\w ./-]+$"]
 stop_words = ["014df517-39d1-4453-b7b3-9930c563627c", "abcdefghijklmnopqrstuvwxyz"]
 
+[[allowlists]]
+target = "secret"
+flags = ["IGNORECASE"]
+regexes = ["^(?:(?:your|insert|replace)(?:[_ -](?:api[_ -]?key|access[_ -]?token|auth[_ -]?token|token|secret|password))(?:[_ -]?here)?|(?:example|sample|placeholder|dummy|redacted|changeme|replace[_ -]?me)|<[^>\\r\\n]{1,64}>|\\$\\{[A-Z0-9_]{1,64}\\})$"]
+
 [[rules]]
 id = "1password-secret-key"
 description = "Uncovered a possible 1Password secret key, potentially compromising access to secrets in vaults."

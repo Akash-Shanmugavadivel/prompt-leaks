@@ -55,6 +55,7 @@ def render_catalog(data: dict[str, Any], *, commit: str) -> tuple[str, int, int]
         rendered = _render_allowlist(global_allowlist, header="[[allowlists]]")
         if rendered:
             lines.extend(rendered)
+    lines.extend(_render_prompt_placeholder_allowlist())
 
     imported = 0
     omitted = 0
@@ -68,6 +69,24 @@ def render_catalog(data: dict[str, Any], *, commit: str) -> tuple[str, int, int]
     lines.extend(_render_prompt_extensions())
 
     return "\n".join(lines).rstrip() + "\n", imported, omitted
+
+
+def _render_prompt_placeholder_allowlist() -> list[str]:
+    """Suppress explicit documentation placeholders captured as credentials."""
+    pattern = (
+        r"^(?:(?:your|insert|replace)(?:[_ -](?:api[_ -]?key|"
+        r"access[_ -]?token|auth[_ -]?token|token|secret|password))"
+        r"(?:[_ -]?here)?|(?:example|sample|placeholder|dummy|redacted|"
+        r"changeme|replace[_ -]?me)|<[^>\r\n]{1,64}>|"
+        r"\$\{[A-Z0-9_]{1,64}\})$"
+    )
+    return [
+        "[[allowlists]]",
+        'target = "secret"',
+        'flags = ["IGNORECASE"]',
+        f"regexes = {_array([pattern])}",
+        "",
+    ]
 
 
 def _render_prompt_extensions() -> list[str]:

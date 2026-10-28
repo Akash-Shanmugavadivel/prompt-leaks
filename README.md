@@ -385,6 +385,12 @@ cards and IBANs, AWS secret and session credentials, and OpenAI project keys.
 The filename only `pkcs12-file` rule is omitted because prompt scanning has no
 file path.
 
+Explicit documentation placeholders such as `YOUR_API_KEY_HERE`,
+`YOUR_ACCESS_TOKEN`, `<token>`, `${API_KEY}`, `CHANGEME`, and `REDACTED` are
+globally allowlisted. The allowlist applies to the captured value, so surrounding
+credential syntax such as `Authorization: Bearer YOUR_API_KEY_HERE` is allowed
+while a real bearer value remains subject to format and entropy checks.
+
 Run the included credential, PII, and clean-prompt evaluation set with:
 
 ```powershell
