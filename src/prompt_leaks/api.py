@@ -15,6 +15,8 @@ from .presidio import (
     PresidioScanConfig,
     PresidioUnavailableError,
 )
+from .sensitive import SensitiveModelUnavailableError
+from .sensitive_service import scan_sensitive_data_async
 
 from .service import (
     MAX_PROMPT_CHARS,
@@ -113,6 +115,37 @@ class ScanResponse(BaseModel):
     sanitized_messages: list[str] | None = None
 
 
+class SensitiveScanRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+    scope: Literal["INPUT", "OUTPUT"] = "INPUT"
+    mode: Literal["ENFORCE", "DRY_RUN"] = "DRY_RUN"
+
+
+class SensitiveFindingResponse(BaseModel):
+    category: str
+    start: int
+    end: int
+    confidence: float
+    method: Literal["GLINER", "SEMANTIC", "HYBRID"]
+    signals: dict[str, float | None]
+    span_type: Literal["ENTITY", "CONTEXT"]
+    action: Literal["ALLOW", "MASK", "REDACT", "BLOCK"]
+
+
+class SensitiveScanResponse(BaseModel):
+    status: Literal["SUCCESS", "ERROR"]
+    scope: Literal["INPUT", "OUTPUT"]
+    mode: Literal["ENFORCE", "DRY_RUN"]
+    detected: bool
+    blocked: bool
+    would_block: bool
+    decision: Literal["ALLOW", "MASK", "REDACT", "BLOCK"]
+    finding_count: int
+    findings: list[SensitiveFindingResponse]
+    sanitized_text: str | None = None
+    error: str | None = None
+
+
 app = FastAPI(
     title="prompt-leaks",
     version="0.1.0",
@@ -205,6 +238,41 @@ async def scan(request: ScanRequest) -> dict[str, object]:
             detail="Presidio could not analyze the requested language or entities.",
         ) from error
     return result.to_dict(include_sanitized_prompt=request.mode == "redact")
+
+
+@app.post(
+    "/v1/sensitive/scan",
+    response_model=SensitiveScanResponse,
+    response_model_exclude_none=True,
+)
+async def scan_sensitive(request: SensitiveScanRequest) -> dict[str, object]:
+    """Detect confidential business content with local GLiNER and BART models."""
+    enabled = os.getenv("PROMPT_LEAKS_ENABLE_SENSITIVE", "true").casefold()
+    if enabled in {"0", "false", "no", "off"}:
+        raise HTTPException(
+            status_code=403,
+            detail="Sensitive-data model detection is disabled by the server.",
+        )
+    try:
+        result = await scan_sensitive_data_async(
+            request.text,
+            scope=request.scope,
+            mode=request.mode,
+        )
+    except SensitiveModelUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "Sensitive-data models are unavailable. Install the optional "
+                "dependencies and download the configured local models."
+            ),
+        ) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=422,
+            detail="Sensitive-data request or server policy is invalid.",
+        ) from error
+    return result.to_dict()
 
 
 def run() -> None:

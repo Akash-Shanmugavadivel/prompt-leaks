@@ -33,6 +33,14 @@ an English spaCy model:
 .\.venv\Scripts\python.exe -m spacy download en_core_web_lg
 ```
 
+To enable model-based confidential business-data detection, install the
+optional runtime and download both models once:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[sensitive]"
+.\.venv\Scripts\python.exe scripts\download_sensitive_models.py
+```
+
 ## Use as a Python function
 
 ```python
@@ -99,6 +107,20 @@ result = scan_messages(
 
 The detector loads and compiles the packaged 233-rule catalog once per Python
 process. Calls after the first reuse the same detector.
+
+Model-based detection is also available as a separate Python function:
+
+```python
+from prompt_leaks import scan_sensitive_data
+
+result = scan_sensitive_data(
+    user_prompt,
+    scope="INPUT",
+    mode="ENFORCE",
+)
+if result.blocked:
+    raise ValueError("Confidential content cannot be sent to the model")
+```
 
 ## Run the FastAPI service
 
@@ -279,6 +301,52 @@ $env:PROMPT_LEAKS_ENABLE_PRESIDIO = "false"
 Presidio requires an NLP model and adds more CPU, memory, and startup time than
 the deterministic secret rules. The analyzer is created lazily on the first
 Presidio request and then reused.
+
+## Sensitive business-data model detection
+
+`POST /v1/sensitive/scan` is a separate, optional second detection tier. It
+combines GLiNER entity spans with BART zero-shot classification to identify 26
+classes of confidential business data, including non-public financials,
+strategy, intellectual property, source code, product roadmaps, customer and
+vendor contracts, HR, legal, M&A, security architecture, internal prompts,
+audit findings, pricing, and restricted documents.
+
+```powershell
+$body = @{
+    text = "Project Falcon launches in September; the confidential budget is 4.2 million."
+    scope = "INPUT"
+    mode = "DRY_RUN"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+    -Uri "http://127.0.0.1:8000/v1/sensitive/scan" `
+    -Method Post `
+    -ContentType "application/json" `
+    -Body $body
+```
+
+`DRY_RUN` reports the decision through `would_block` without blocking the
+request. `ENFORCE` applies each category's `INPUT` or `OUTPUT` policy. Findings
+contain only categories, offsets, confidence, signal scores, and actions; the
+matched text is never returned. A semantic-only finding covers context rather
+than an exact entity span, so a configured mask or redact action is safely
+promoted to block.
+
+The models are loaded lazily from `models\sensitive`, used offline, cached for
+the process lifetime, and executed through a single inference worker. Override
+the location or compute device with:
+
+```powershell
+$env:PROMPT_LEAKS_SENSITIVE_MODELS_DIR = "D:\models\prompt-leaks"
+$env:PROMPT_LEAKS_SENSITIVE_DEVICE = "cpu" # auto, cpu, or cuda
+```
+
+Set `PROMPT_LEAKS_SENSITIVE_POLICY` to an administrator-controlled JSON policy
+file to replace the default categories and actions. Set
+`PROMPT_LEAKS_ENABLE_SENSITIVE=false` to disable the endpoint server-wide.
+Model inference is materially slower and more memory intensive than the
+deterministic secret scanner, so keep `/v1/scan` as Tier 1 and invoke this tier
+only for workflows that require confidential business-context detection.
 
 ## Credential liveness
 

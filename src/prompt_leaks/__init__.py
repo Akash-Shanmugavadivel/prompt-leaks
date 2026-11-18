@@ -15,6 +15,14 @@ from .service import (
     scan_prompt,
     scan_prompt_with_liveness,
 )
+from .sensitive import (
+    SensitiveCategory,
+    SensitiveFinding,
+    SensitiveModelUnavailableError,
+    SensitiveScanResult,
+    SensitiveSettings,
+)
+from .sensitive_service import scan_sensitive_data, scan_sensitive_data_async
 
 
 def default_detector(
@@ -41,6 +49,11 @@ __all__ = [
     "PresidioScanConfig",
     "PresidioUnavailableError",
     "ScanResult",
+    "SensitiveCategory",
+    "SensitiveFinding",
+    "SensitiveModelUnavailableError",
+    "SensitiveScanResult",
+    "SensitiveSettings",
     "default_config",
     "default_detector",
     "load_config",
@@ -49,5 +62,7 @@ __all__ = [
     "scan_prompt_with_liveness",
     "scan_messages",
     "scan_messages_with_liveness",
+    "scan_sensitive_data",
+    "scan_sensitive_data_async",
 ]
 
