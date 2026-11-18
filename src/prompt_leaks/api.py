@@ -15,6 +15,8 @@ from .presidio import (
     PresidioScanConfig,
     PresidioUnavailableError,
 )
+from .quality import QualityModelUnavailableError
+from .quality_service import check_response_quality_async
 from .sensitive import SensitiveModelUnavailableError
 from .sensitive_service import scan_sensitive_data_async
 
@@ -146,6 +148,22 @@ class SensitiveScanResponse(BaseModel):
     error: str | None = None
 
 
+class QualityCheckRequest(BaseModel):
+    prompt: str = Field(max_length=20_000)
+    response: str = Field(max_length=100_000)
+    response_type: Literal["text", "code", "json"] = "text"
+
+
+class QualityCheckResponse(BaseModel):
+    status: Literal["PASS", "REVIEW", "FAIL", "SKIP"]
+    score: int | None
+    reasons: list[str]
+    word_count: int | None = None
+    word_budget: int | None = None
+    semantic_pairs: list[list[int]] | None = None
+    policy_version: str
+
+
 app = FastAPI(
     title="prompt-leaks",
     version="0.1.0",
@@ -271,6 +289,30 @@ async def scan_sensitive(request: SensitiveScanRequest) -> dict[str, object]:
         raise HTTPException(
             status_code=422,
             detail="Sensitive-data request or server policy is invalid.",
+        ) from error
+    return result.to_dict()
+
+
+@app.post(
+    "/v1/quality/check",
+    response_model=QualityCheckResponse,
+    response_model_exclude_none=True,
+)
+async def check_quality(request: QualityCheckRequest) -> dict[str, object]:
+    """Advisory response-quality analysis; never changes security decisions."""
+    enabled = os.getenv("PROMPT_LEAKS_ENABLE_QUALITY", "true").casefold()
+    if enabled in {"0", "false", "no", "off"}:
+        raise HTTPException(403, "Response-quality checks are disabled by the server.")
+    try:
+        result = await check_response_quality_async(
+            request.prompt,
+            request.response,
+            request.response_type,
+        )
+    except QualityModelUnavailableError as error:
+        raise HTTPException(
+            503,
+            "Response-quality model is unavailable. Install and download the quality model.",
         ) from error
     return result.to_dict()
 

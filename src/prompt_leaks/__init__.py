@@ -9,6 +9,8 @@ from .presidio import (
     PresidioScanConfig,
     PresidioUnavailableError,
 )
+from .quality import QualityModelUnavailableError, QualityPolicy, QualityResult, ResponseQualityGuardrail
+from .quality_service import check_response_quality, check_response_quality_async
 from .service import (
     scan_messages,
     scan_messages_with_liveness,
@@ -45,6 +47,10 @@ __all__ = [
     "Finding",
     "LivenessResult",
     "PromptLeakDetector",
+    "QualityModelUnavailableError",
+    "QualityPolicy",
+    "QualityResult",
+    "ResponseQualityGuardrail",
     "PresidioAnalysisError",
     "PresidioScanConfig",
     "PresidioUnavailableError",
@@ -64,5 +70,7 @@ __all__ = [
     "scan_messages_with_liveness",
     "scan_sensitive_data",
     "scan_sensitive_data_async",
+    "check_response_quality",
+    "check_response_quality_async",
 ]
 

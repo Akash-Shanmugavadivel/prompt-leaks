@@ -41,6 +41,13 @@ optional runtime and download both models once:
 .\.venv\Scripts\python.exe scripts\download_sensitive_models.py
 ```
 
+To enable advisory response-quality checks with semantic repetition detection:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[quality]"
+.\.venv\Scripts\python.exe scripts\download_quality_model.py
+```
+
 ## Use as a Python function
 
 ```python
@@ -347,6 +354,24 @@ file to replace the default categories and actions. Set
 Model inference is materially slower and more memory intensive than the
 deterministic secret scanner, so keep `/v1/scan` as Tier 1 and invoke this tier
 only for workflows that require confidential business-context detection.
+
+## Response quality
+
+`POST /v1/quality/check` checks an AI response after generation. It is
+advisory and does not alter secret or sensitive-data security decisions.
+
+```json
+{
+  "prompt": "Explain Python briefly",
+  "response": "Python is a programming language used for automation.",
+  "response_type": "text"
+}
+```
+
+Text checks cover empty responses, intent-based word budgets, long sentences,
+filler language, exact repetition, and semantic repetition. Code skips prose
+rules. JSON is parsed for validity and otherwise skips prose rules. Results are
+`PASS`, `REVIEW`, `FAIL`, or `SKIP`; neither prompt nor response is echoed.
 
 ## Credential liveness
 

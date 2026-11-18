@@ -29,6 +29,10 @@ sensitive = [
   "torch>=2.5,<3",
   "transformers>=4.49,<5",
 ]
+quality = [
+  "huggingface-hub>=0.30,<2",
+  "sentence-transformers>=3,<6",
+]
 
 [project.scripts]
 prompt-leaks-api = "prompt_leaks.api:run"
